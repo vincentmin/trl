@@ -24,6 +24,7 @@ from transformers import DataCollator, PreTrainedModel, PreTrainedTokenizerBase,
 from transformers.trainer_callback import TrainerCallback
 
 from ..import_utils import is_peft_available
+from ..models import create_reference_model
 from .utils import DPODataCollatorWithPadding, pad_to_length
 
 
@@ -39,7 +40,7 @@ class DPOTrainer(Trainer):
         model (`transformers.PreTrainedModel`):
             The model to train, preferably an `AutoModelForSequenceClassification`.
         ref_model (`PreTrainedModelWrapper`):
-            Hugging Face transformer model with a casual language modelling head. Used for implicit reward computation and loss.
+            Hugging Face transformer model with a casual language modelling head. Used for implicit reward computation and loss. If no `ref_model` is provided, `model` without adapters is used as the reference model (only possible if peft_config is provided).
         beta (`float`, defaults to 0.1):
             The beta factor in DPO loss. Higher beta means less divergence from the initial policy.
         args (`transformers.TrainingArguments`):
@@ -78,7 +79,7 @@ class DPOTrainer(Trainer):
     def __init__(
         self,
         model: Union[PreTrainedModel, nn.Module] = None,
-        ref_model: Union[PreTrainedModel, nn.Module] = None,
+        ref_model: Optional[Union[PreTrainedModel, nn.Module]] = None,
         beta: float = 0.1,
         args: TrainingArguments = None,
         data_collator: Optional[DataCollator] = None,
@@ -154,7 +155,6 @@ class DPOTrainer(Trainer):
         self.padding_value = padding_value
 
         self.beta = beta
-        self.ref_model = ref_model
 
         self._stored_metrics = defaultdict(lambda: defaultdict(list))
 
@@ -171,6 +171,15 @@ class DPOTrainer(Trainer):
             optimizers,
             preprocess_logits_for_metrics,
         )
+
+        if ref_model:
+            self.ref_model = ref_model
+        elif getattr(self.model, "is_peft_model", False):
+            # if we have a peft model, we can use the base model itself as the reference model
+            self.ref_model = model.get_base_model()
+        else:
+            # if we don't have a peft model, we need to create a reference model by copying the `model`
+            self.ref_model = create_reference_model(model)
 
         # Since we inherit from trainer we always have access to an accelerator
         if hasattr(self, "accelerator"):
